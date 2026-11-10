@@ -1,0 +1,20 @@
+.venv/
+models/
+vendor/
+data/
+web/node_modules/
+web/dist/
+__pycache__/
+.pytest_cache/
+*.log
+.test-*/
+.qa/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Separate Chrome extension; not part of Tingji.
+/chrome-meeting-notes/
+/design/
+*.zip
