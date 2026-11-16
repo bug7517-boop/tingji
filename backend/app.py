@@ -437,7 +437,7 @@ def rename_speakers(job_id: str, settings: SpeakerNames):
         job = read(job_id)
         if job['status'] in ACTIVE:
             raise HTTPException(409, '請等待目前處理完成後再修改講者姓名。')
-        known = speakers.speaker_ids(job['segments'])
+        known = speakers.catalog(job)
         if not set(settings.names).issubset(known):
             raise HTTPException(400, '包含這份逐字稿不存在的講者。')
         names = dict(job.get('speaker_names') or {})
@@ -450,6 +450,43 @@ def rename_speakers(job_id: str, settings: SpeakerNames):
             else:
                 names.pop(speaker, None)
         update(job_id, speaker_names=names)
+    return {'ok': True}
+
+
+class SegmentSpeaker(BaseModel):
+    speaker: str | None = None
+    restore: bool = False
+    start: float
+    end: float
+
+
+@app.patch('/api/jobs/{job_id}/segments/{index}/speaker')
+def correct_segment_speaker(job_id: str, index: int, settings: SegmentSpeaker):
+    with LOCK:
+        job = read(job_id)
+        if job['status'] in ACTIVE or not job.get('transcript_done'):
+            raise HTTPException(409, '請等待逐字稿完成後再修改段落講者。')
+        if not 0 <= index < len(job['segments']):
+            raise HTTPException(404, '找不到這段逐字稿，請重新整理。')
+        segment = job['segments'][index]
+        if (segment['start'], segment['end']) != (settings.start, settings.end):
+            raise HTTPException(409, '段落已更新，請重新整理後再修改。')
+        if settings.speaker is not None and settings.speaker not in speakers.catalog(job):
+            raise HTTPException(400, '這份紀錄不存在此講者。')
+        keys = ('speaker', 'speakers', 'speaker_uncertain')
+        if settings.restore:
+            original = segment.pop('speaker_original', None)
+            if original is not None:
+                for key in keys:
+                    segment.pop(key, None)
+                segment.update(original)
+            segment.pop('speaker_manual', None)
+        else:
+            if 'speaker_original' not in segment:
+                segment['speaker_original'] = {key: segment[key] for key in keys if key in segment}
+            segment.update(speaker=settings.speaker, speakers=[settings.speaker] if settings.speaker else [],
+                           speaker_uncertain=settings.speaker is None, speaker_manual=True)
+        write(job)
     return {'ok': True}
 
 

@@ -5,7 +5,7 @@ import { api, active, clock, statusText } from './api';
 import './style.css';
 import NoisePreview, { profileName } from './NoisePreview';
 import TranscriptDisplay from './TranscriptDisplay';
-import { SpeakerCount, SpeakerLabel, SpeakerNames } from './Speakers';
+import { SpeakerCount, SpeakerLabel, SpeakerNames, SegmentSpeaker, knownSpeakerIds } from './Speakers';
 
 function Sidebar({page, setPage}) {
   return <aside className="sidebar">
@@ -104,8 +104,9 @@ function Results({job, health, onAction, notify, showTimestamps, onTimestampsCha
   useEffect(()=>{setTab('transcript');setQuery('');setCurrent(0);},[job?.id]);
   useEffect(()=>setSpeakerCount(job?.speaker_count || 0),[job?.id,job?.speaker_count]);
   const download = kind => {window.location.href=`/api/jobs/${job.id}/export/${kind}${kind==='txt'?`?timestamps=${showTimestamps}`:''}`;};
-  const rows = job?.segments?.filter(s=>s.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())) || [];
+  const rows = job?.segments?.map((s,segmentIndex)=>({...s,segmentIndex})).filter(s=>s.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())) || [];
   const isActive=job&&active(job.status);
+  const speakerIds=job?knownSpeakerIds(job):[];
   return <section className="results panel" aria-label="轉錄結果">
     <div className="result-toolbar"><div role="tablist" aria-label="結果類型" className="tabs"><button role="tab" aria-selected={tab==='transcript'} className={tab==='transcript'?'tab current':'tab'} onClick={()=>setTab('transcript')}>逐字稿</button><button role="tab" aria-selected={tab==='summary'} className={tab==='summary'?'tab current':'tab'} onClick={()=>setTab('summary')}>會議摘要</button></div>
     <div className="exports"><span><Upload size={17}/>匯出</span><button disabled={!job?.segments?.length} onClick={()=>download('txt')}>TXT</button><button disabled={!job?.segments?.length} onClick={()=>download('srt')}>SRT</button>{tab==='summary'?<button disabled={!job?.summary} onClick={()=>download('summary')}>摘要</button>:null}</div></div>
@@ -123,8 +124,8 @@ function Results({job, health, onAction, notify, showTimestamps, onTimestampsCha
         {job.transcript_done&&job.segments.length?<div className="speaker-tools"><div className="speaker-actions"><SpeakerCount label="補做講者人數" value={speakerCount} onChange={setSpeakerCount} disabled={isActive}/><button className="secondary compact" disabled={isActive||!health?.speakers_ready} onClick={()=>onAction('speakers',{count:speakerCount})}>{job.speakers_done?'重新辨識講者':'辨識講者'}</button></div><p>{job.speakers_done?'講者編號只適用這份錄音；交接或重疊的段落請回聽確認。':'可在保留文字與時間戳的情況下，為這份逐字稿補上講者標籤。'}{!health?.speakers_ready?' 請先執行 setup.cmd 及「下載講者模型.cmd」。':''}</p>{job.speaker_error?<div className="inline-error" role="alert">{job.speaker_error}</div>:null}</div>:null}
         <SpeakerNames key={job.id} job={job} disabled={isActive} onSave={names=>onAction('speaker-names',{names},'PATCH')}/><div className="transcript-tools"><span>TXT 依此設定匯出；SRT 保留字幕時間</span><TranscriptDisplay showTimestamps={showTimestamps} onChange={onTimestampsChange}/></div>
         {job.segments.length?<label className="search"><Search size={17}/><input aria-label="搜尋逐字稿" value={query} placeholder="搜尋逐字稿…" onChange={e=>setQuery(e.target.value)}/><span>{rows.length} 段</span></label>:null}
-        {!rows.length?<div className="small-empty">{job.segments.length?'找不到符合的文字。':job.transcript_done?'未偵測到可辨識的語音。':'正在等待辨識結果，完成一段就會保存。'}</div>:<div className="segments">{rows.map((s,i)=><div key={s.start+'-'+i} className={`segment ${current>=s.start&&current<s.end?'playing':''}`}>
-          {showTimestamps?<div className="segment-stamp"><button className="timecode" title="播放此段" onClick={()=>{if(player.current){player.current.currentTime=s.start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}>{clock(s.start)}</button>{s.language ? <span className="language-label">{{zh:"繁體中文",en:"English",mixed:"中英混合",other:"其他"}[s.language]}</span> : null}</div>:null}<div><SpeakerLabel segment={s} names={job.speaker_names || {}}/><p>{s.text}</p></div></div>)}</div>}
+        {!rows.length?<div className="small-empty">{job.segments.length?'找不到符合的文字。':job.transcript_done?'未偵測到可辨識的語音。':'正在等待辨識結果，完成一段就會保存。'}</div>:<div className="segments">{rows.map((s,i)=><div key={job.id+'-'+s.segmentIndex} className={`segment ${current>=s.start&&current<s.end?'playing':''}`}>
+          {showTimestamps?<div className="segment-stamp"><button className="timecode" title="播放此段" onClick={()=>{if(player.current){player.current.currentTime=s.start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}>{clock(s.start)}</button>{s.language ? <span className="language-label">{{zh:"繁體中文",en:"English",mixed:"中英混合",other:"其他"}[s.language]}</span> : null}</div>:null}<div><SpeakerLabel segment={s} names={job.speaker_names || {}}/><p>{s.text}</p>{speakerIds.length?<SegmentSpeaker segment={s} ids={speakerIds} names={job.speaker_names || {}} disabled={isActive} onSave={payload=>onAction(`segments/${s.segmentIndex}/speaker`,payload,'PATCH')}/>:null}</div></div>)}</div>}
       </>:<>
         {job.summary_error?<div className="inline-error"><AlertCircle size={17}/><span>{job.summary_error}</span></div>:null}
         {job.summary?<><p className="summary-note">AI 摘要可能有遺漏，請對照時間戳與原始錄音確認。</p><SummaryText text={job.summary}/></>:<div className="small-empty">{job.status==='summarizing'?'正在本機整理摘要，長錄音需要一些時間。':'摘要完成後，會議重點、決議與待辦會顯示在這裡。'}</div>}

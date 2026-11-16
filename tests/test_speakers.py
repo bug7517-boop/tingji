@@ -156,3 +156,56 @@ def test_rerun_clears_names_when_new_groups_are_published(stored, monkeypatch):
     monkeypatch.setattr(speakers, 'detect', lambda *args: [{'start': 0, 'end': 4, 'speaker': 'speaker_1'}])
     service.process(stored, 'speakers')
     assert service.read(stored)['speaker_names'] == {}
+
+
+def test_correct_only_one_segment_persists_and_exports_names(stored):
+    segments = [{'start': 1, 'end': 2, 'text': '第一段', 'speaker': 'speaker_1', 'speakers': ['speaker_1']},
+                {'start': 2, 'end': 4, 'text': '修正這一段 English', 'speaker': None, 'speakers': ['speaker_1', 'speaker_2'], 'speaker_uncertain': True}]
+    service.update(stored, segments=segments, speaker_names={'speaker_1': '王小明', 'speaker_2': 'Alice'})
+    client = TestClient(service.app)
+    url = f'/api/jobs/{stored}/segments/1/speaker'
+    data = {'speaker': 'speaker_2', 'start': 2, 'end': 4}
+    assert client.patch(url, json=data).status_code == 200
+    result = client.get(f'/api/jobs/{stored}').json()
+    assert result['segments'][0] == segments[0]
+    changed = result['segments'][1]
+    assert changed['speaker'] == 'speaker_2' and changed['speaker_manual']
+    assert changed['speaker_original'] == {k: segments[1][k] for k in ('speaker', 'speakers', 'speaker_uncertain')}
+    for kind in ('txt', 'srt'):
+        for timestamps in ('true', 'false'):
+            body = client.get(f'/api/jobs/{stored}/export/{kind}?timestamps={timestamps}').text
+            assert '【王小明】第一段' in body and '【Alice】修正這一段 English' in body
+            assert '交接或重疊' not in body
+    assert service.read(stored)['summary'] == '原本摘要'
+    assert client.patch(url, json={**data, 'speaker': None}).status_code == 200
+    assert service.read(stored)['segments'][1]['speakers'] == []
+    assert client.patch(url, json={**data, 'speaker': None, 'restore': True}).status_code == 200
+    assert service.read(stored)['segments'] == segments
+
+
+def test_correction_keeps_catalog_and_rejects_stale_or_invalid_targets(stored):
+    original = [{'start': 1, 'end': 2, 'text': '不變', 'speaker': 'speaker_1'},
+                {'start': 2, 'end': 3, 'text': '第二位', 'speaker': 'speaker_2'}]
+    service.update(stored, segments=original)
+    client = TestClient(service.app)
+    url = f'/api/jobs/{stored}/segments/0/speaker'
+    data = {'speaker': 'speaker_2', 'start': 1, 'end': 2}
+    for payload, code in [({**data, 'start': 9}, 409), ({**data, 'speaker': 'speaker_99'}, 400)]:
+        assert client.patch(url, json=payload).status_code == code
+        assert service.read(stored)['segments'] == original
+    assert client.patch(f'/api/jobs/{stored}/segments/-1/speaker', json=data).status_code == 404
+    assert client.patch(url, json=data).status_code == 200
+    assert speakers.catalog(service.read(stored)) == {'speaker_1', 'speaker_2'}
+    assert client.patch(url, json={**data, 'speaker': 'speaker_1'}).status_code == 200
+    assert client.patch(url, json={**data, 'speaker': None, 'restore': True}).status_code == 200
+    assert service.read(stored)['segments'] == original
+    service.update(stored, status='diarizing')
+    assert client.patch(url, json=data).status_code == 409
+
+
+def test_new_diarization_removes_old_manual_corrections():
+    segments = [{'start': 1, 'end': 2, 'text': '原文', 'speaker': 'speaker_1', 'speaker_manual': True,
+                 'speaker_original': {'speaker': 'speaker_2'}}]
+    result = speakers.label_segments(segments, [{'start': 0, 'end': 3, 'speaker': 'speaker_3'}])
+    assert result[0]['speaker'] == 'speaker_3'
+    assert 'speaker_manual' not in result[0] and 'speaker_original' not in result[0]

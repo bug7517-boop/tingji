@@ -79,14 +79,21 @@ def label_segments(segments, turns):
         ranked = sorted(scores, key=scores.get, reverse=True)
         selected = [s for s in ranked if scores[s] >= max(0.2, (segment['end'] - segment['start']) * 0.15)]
         # Very short or unaligned speech remains explicitly unknown.
-        result.append({**segment, 'speaker': selected[0] if len(selected) == 1 else None,
+        clean = {k: v for k, v in segment.items() if k not in {'speaker_original', 'speaker_manual'}}
+        result.append({**clean, 'speaker': selected[0] if len(selected) == 1 else None,
                        'speakers': selected, 'speaker_uncertain': len(selected) != 1})
     return result
 
 
 def speaker_ids(segments):
-    return {value for segment in segments for value in
+    originals = [s['speaker_original'] for s in segments if s.get('speaker_original')]
+    return {value for segment in [*segments, *originals] for value in
             (segment.get('speakers') or ([segment['speaker']] if segment.get('speaker') else []))}
+
+
+def catalog(job):
+    return (speaker_ids(job['segments']) | set(job.get('speaker_names') or {}) |
+            {t['speaker'] for t in job.get('speaker_turns') or []})
 
 
 def label(segment, names=None):
