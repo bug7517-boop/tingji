@@ -4,3 +4,4 @@ python-multipart==0.0.32
 faster-whisper==1.2.1
 opencc-python-reimplemented==0.1.7
 httpx==0.28.1
+sherpa-onnx==2.0.1

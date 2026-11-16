@@ -70,6 +70,8 @@ def main():
         print('Downloading Qwen2.5 1.5B Q4_K_M (~1.0 GB)...', flush=True)
         hf_hub_download('Qwen/Qwen2.5-1.5B-Instruct-GGUF',
                         filename='qwen2.5-1.5b-instruct-q4_k_m.gguf', local_dir=str(ROOT / 'models'))
+        from download_speakers import main as download_speakers
+        download_speakers()
     print('Models ready. Start the app and import a recording.', flush=True)
 
 

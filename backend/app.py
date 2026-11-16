@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import audio, summary, transcription, noise
+from . import audio, summary, transcription, noise, speakers
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = Path(os.environ.get('TINGJI_DATA', str(ROOT / 'data')))
@@ -24,7 +24,7 @@ JOBS = DATA / 'jobs'
 MODELS = ROOT / 'models' / 'whisper'
 MAX_BYTES = 4 * 1024**3
 ALLOWED_EXT = {'.mp3', '.m4a', '.wav', '.flac', '.ogg', '.aac', '.mp4', '.webm', '.wma', '.opus'}
-ACTIVE = {'queued', 'normalizing', 'loading', 'transcribing', 'summarizing', 'denoising', 'previewing'}
+ACTIVE = {'queued', 'normalizing', 'loading', 'transcribing', 'summarizing', 'denoising', 'previewing', 'diarizing'}
 LOCK = threading.RLock()
 TASKS = queue.Queue()
 MODEL_LOCK = threading.Lock()
@@ -197,7 +197,30 @@ def process(job_id, action='transcribe'):
             job = update(job_id, transcript_done=True, progress=100,
                          message='逐字稿已完成' if job['segments'] else '未偵測到可辨識的語音')
         job = read(job_id)
-        if (job['auto_summary'] or action == 'summary') and job['segments']:
+        if job.get('diarization') and not job.get('speakers_done') and job['segments'] and action != 'summary':
+            try:
+                with MODEL_LOCK:
+                    WHISPER.clear()
+                if 'model' in locals():
+                    del model
+                import gc
+                gc.collect()
+                normalized = ensure_normalized(job_id, event)
+                update(job_id, status='diarizing', message='正在本機區分講者，長錄音需要一些時間', speaker_error=None)
+                turns = job.get('speaker_turns')
+                if turns is None:
+                    turns = speakers.detect(normalized, job.get('speaker_count', 0), event.is_set,
+                        lambda ratio: update(job_id, progress=round(ratio * 100, 1)))
+                    update(job_id, speaker_turns=turns)
+                if event.is_set():
+                    raise InterruptedError()
+                update(job_id, segments=speakers.label_segments(job['segments'], turns), speakers_done=True)
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                update(job_id, speaker_error=f'講者辨識未完成：{exc}')
+            job = read(job_id)
+        if (job['auto_summary'] or action == 'summary') and job['segments'] and action != 'speakers':
             # Release the ASR model before loading the summary model on modest PCs.
             with MODEL_LOCK:
                 WHISPER.clear()
@@ -223,7 +246,8 @@ def process(job_id, action='transcribe'):
             raise InterruptedError()
         latest = read(job_id)
         update(job_id, status='done', progress=100,
-               message='逐字稿已完成；摘要需要重試' if latest.get('summary_error') else
+               message='逐字稿已完成；講者辨識需要重試' if latest.get('speaker_error') else
+               '逐字稿已完成；摘要需要重試' if latest.get('summary_error') else
                ('轉錄完成' if latest['segments'] else '未偵測到可辨識的語音'), error=None)
     except InterruptedError:
         update(job_id, status='paused', message='已暫停，完成的分段已保存', error=None)
@@ -288,7 +312,7 @@ async def protect_local(request: Request, call_next):
 
 @app.get('/api/health')
 def health():
-    return {'ok': True, 'local': True, 'noise_mode_available': True, 'summary_ready': summary.ready(),
+    return {'ok': True, 'local': True, 'noise_mode_available': True, 'summary_ready': summary.ready(), 'speakers_ready': speakers.ready(),
             'models': {name: (MODELS / name / 'model.bin').exists() for name in ['tiny', 'base', 'small', 'medium']}}
 
 
@@ -306,6 +330,7 @@ def list_jobs():
 @app.post('/api/jobs', status_code=201)
 async def create_job(file: UploadFile = File(...), language: str = Form('zh'),
                      model: str = Form('small'), auto_summary: bool = Form(True),
+                     diarization: bool = Form(False), speaker_count: int = Form(0, ge=0, le=20),
                      noise_mode: bool = Form(False), preview_start: float = Form(0, ge=0, lt=10800),
                      preview_minutes: int = Form(3), noise_profile: str = Form('standard')):
     ext = Path(file.filename or '').suffix.lower()
@@ -319,6 +344,9 @@ async def create_job(file: UploadFile = File(...), language: str = Form('zh'),
     if not (MODELS / model / 'model.bin').exists():
         await file.close()
         raise HTTPException(409, f'{model} 模型尚未下載，請先執行「下載模型.cmd」。')
+    if diarization and not speakers.ready():
+        await file.close()
+        raise HTTPException(409, '請先執行 setup.cmd 及「下載講者模型.cmd」準備講者辨識。')
     job_id = uuid.uuid4().hex
     folder = directory(job_id)
     folder.mkdir(parents=True)
@@ -337,7 +365,8 @@ async def create_job(file: UploadFile = File(...), language: str = Form('zh'),
                'created_at': datetime.now(timezone.utc).isoformat(), 'size': size, 'language': language,
                'model': model, 'auto_summary': auto_summary, 'status': 'queued', 'message': '排隊等待處理',
                'progress': 0, 'duration': None, 'completed_chunks': 0, 'segments': [],
-               'transcript_done': False, 'summary': '', 'summary_parts': [], 'summary_error': None, 'error': None}
+               'transcript_done': False, 'summary': '', 'summary_parts': [], 'summary_error': None, 'error': None,
+               'diarization': diarization, 'speaker_count': speaker_count, 'speakers_done': False, 'speaker_error': None}
         job.update(noise_mode=noise_mode, workflow='preview' if noise_mode else 'full',
                    preview_start=preview_start, preview_minutes=preview_minutes, noise_profile=noise_profile,
                    preview={}, audio_profile='original', pending_action='preview' if noise_mode else 'transcribe')
@@ -394,6 +423,25 @@ def regenerate_summary(job_id: str):
         update(job_id, status='queued', message='排隊等待摘要', summary_error=None)
         STOP_EVENTS[job_id] = threading.Event()
         TASKS.put((job_id, 'summary'))
+    return {'ok': True}
+
+
+class SpeakerSettings(BaseModel):
+    count: int = Field(default=0, ge=0, le=20)
+
+
+@app.post('/api/jobs/{job_id}/speakers')
+def identify_speakers(job_id: str, settings: SpeakerSettings):
+    with LOCK:
+        job = read(job_id)
+        if job['status'] in ACTIVE or not job['transcript_done'] or not job['segments']:
+            raise HTTPException(409, '請等待逐字稿完成後再辨識講者。')
+        if not speakers.ready():
+            raise HTTPException(409, '請先執行 setup.cmd 及「下載講者模型.cmd」。')
+        update(job_id, status='queued', pending_action='speakers', message='排隊等待辨識講者',
+               diarization=True, speaker_count=settings.count, speakers_done=False, speaker_turns=None, speaker_error=None)
+        STOP_EVENTS[job_id] = threading.Event()
+        TASKS.put((job_id, 'speakers'))
     return {'ok': True}
 
 

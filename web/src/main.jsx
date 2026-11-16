@@ -5,6 +5,7 @@ import { api, active, clock, statusText } from './api';
 import './style.css';
 import NoisePreview, { profileName } from './NoisePreview';
 import TranscriptDisplay from './TranscriptDisplay';
+import { SpeakerCount, SpeakerLabel } from './Speakers';
 
 function Sidebar({page, setPage}) {
   return <aside className="sidebar">
@@ -21,6 +22,7 @@ function UploadPanel({health, onCreated, notify}) {
   const [drag,setDrag] = useState(false), [busy,setBusy] = useState(false), [percent,setPercent] = useState(0);
   const [noiseMode,setNoiseMode] = useState(false), [trialStart,setTrialStart] = useState(0);
   const [trialMinutes,setTrialMinutes] = useState(3), [noiseProfile,setNoiseProfile] = useState('standard');
+  const [diarization,setDiarization] = useState(false), [speakerCount,setSpeakerCount] = useState(0);
   const input = useRef(null), request = useRef(null);
   useEffect(() => () => request.current?.abort(), []);
   const choose = chosen => {
@@ -37,6 +39,7 @@ function UploadPanel({health, onCreated, notify}) {
     form.append('file',file); form.append('language',language); form.append('model',model); form.append('auto_summary',String(summary));
     form.append('noise_mode',String(noiseMode)); form.append('preview_start',String(Number(trialStart)*60));
     form.append('preview_minutes',String(trialMinutes)); form.append('noise_profile',noiseProfile);
+    form.append('diarization',String(diarization)); form.append('speaker_count',String(speakerCount));
     setBusy(true); setPercent(0);
     const xhr = new XMLHttpRequest(); request.current = xhr;
     xhr.open('POST','/api/jobs');
@@ -72,6 +75,9 @@ function UploadPanel({health, onCreated, notify}) {
       <label>試轉長度<select aria-label="試轉長度" value={trialMinutes} disabled={busy} onChange={e=>setTrialMinutes(Number(e.target.value))}>{[3,4,5].map(m=><option key={m} value={m}>{m} 分鐘</option>)}</select></label>
       <label>降噪強度<select aria-label="降噪強度" value={noiseProfile} disabled={busy} onChange={e=>setNoiseProfile(e.target.value)}><option value="light">輕度降噪</option><option value="standard">標準降噪</option></select></label>
     </div></div> : null}
+    <div className="speaker-option"><label className="check-label"><input type="checkbox" checked={diarization} disabled={busy||!health?.speakers_ready} onChange={e=>setDiarization(e.target.checked)}/>區分不同講者（本機辨識）</label>
+      {diarization?<SpeakerCount value={speakerCount} onChange={setSpeakerCount} disabled={busy}/>:null}
+      <p>{health?.speakers_ready?'以「講者 1、講者 2」標示，不辨識姓名。已知人數時可指定；雜音模式會在整份轉錄後辨識講者。':'請先執行 setup.cmd 及「下載講者模型.cmd」，再重新啟動服務。'}</p></div>
     {missing?<p className="setup-note"><AlertCircle size={15}/>請先執行「下載模型.cmd」準備 {model} 模型。</p>:null}
     {summary&&health&&!health.summary_ready?<p className="setup-note"><AlertCircle size={15}/>摘要模型尚未就緒；逐字稿仍可產生，之後可補做摘要。</p>:null}
   </section>;
@@ -90,11 +96,13 @@ function SummaryText({text}) {
   return <div className="summary-text">{text.split('\n').map((line,i)=>line.startsWith('## ')?<h3 key={i}>{line.slice(3)}</h3>:line.startsWith('# ')?<h2 key={i}>{line.slice(2)}</h2>:<p key={i}>{line.replace(/\*\*/g,'')||'\u00a0'}</p>)}</div>;
 }
 
-function Results({job, onAction, notify, showTimestamps, onTimestampsChange}) {
+function Results({job, health, onAction, notify, showTimestamps, onTimestampsChange}) {
   const [tab,setTab] = useState('transcript'), [query,setQuery] = useState('');
   const [current,setCurrent] = useState(0);
+  const [speakerCount,setSpeakerCount] = useState(0);
   const player = useRef(null);
   useEffect(()=>{setTab('transcript');setQuery('');setCurrent(0);},[job?.id]);
+  useEffect(()=>setSpeakerCount(job?.speaker_count || 0),[job?.id,job?.speaker_count]);
   const download = kind => {window.location.href=`/api/jobs/${job.id}/export/${kind}${kind==='txt'?`?timestamps=${showTimestamps}`:''}`;};
   const rows = job?.segments?.filter(s=>s.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())) || [];
   const isActive=job&&active(job.status);
@@ -112,10 +120,11 @@ function Results({job, onAction, notify, showTimestamps, onTimestampsChange}) {
       {job.audio_ready?<div className="player"><audio key={`${job.id}-${job.audio_profile || 'original'}`} ref={player} src={`/api/jobs/${job.id}/audio`} controls preload="metadata" onTimeUpdate={e=>setCurrent(e.target.currentTime)}/><span>{showTimestamps?'點選時間戳可跳至錄音位置':'可使用播放器回聽錄音'}</span></div>:null}
       <div role="tabpanel" className="result-body">
       {tab==='transcript'?<>
+        {job.transcript_done&&job.segments.length?<div className="speaker-tools"><div className="speaker-actions"><SpeakerCount label="補做講者人數" value={speakerCount} onChange={setSpeakerCount} disabled={isActive}/><button className="secondary compact" disabled={isActive||!health?.speakers_ready} onClick={()=>onAction('speakers',{count:speakerCount})}>{job.speakers_done?'重新辨識講者':'辨識講者'}</button></div><p>{job.speakers_done?'講者編號只適用這份錄音；交接或重疊的段落請回聽確認。':'可在保留文字與時間戳的情況下，為這份逐字稿補上講者標籤。'}{!health?.speakers_ready?' 請先執行 setup.cmd 及「下載講者模型.cmd」。':''}</p>{job.speaker_error?<div className="inline-error" role="alert">{job.speaker_error}</div>:null}</div>:null}
         <div className="transcript-tools"><span>TXT 依此設定匯出；SRT 保留字幕時間</span><TranscriptDisplay showTimestamps={showTimestamps} onChange={onTimestampsChange}/></div>
         {job.segments.length?<label className="search"><Search size={17}/><input aria-label="搜尋逐字稿" value={query} placeholder="搜尋逐字稿…" onChange={e=>setQuery(e.target.value)}/><span>{rows.length} 段</span></label>:null}
         {!rows.length?<div className="small-empty">{job.segments.length?'找不到符合的文字。':job.transcript_done?'未偵測到可辨識的語音。':'正在等待辨識結果，完成一段就會保存。'}</div>:<div className="segments">{rows.map((s,i)=><div key={s.start+'-'+i} className={`segment ${current>=s.start&&current<s.end?'playing':''}`}>
-          {showTimestamps?<div className="segment-stamp"><button className="timecode" title="播放此段" onClick={()=>{if(player.current){player.current.currentTime=s.start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}>{clock(s.start)}</button>{s.language ? <span className="language-label">{{zh:"繁體中文",en:"English",mixed:"中英混合",other:"其他"}[s.language]}</span> : null}</div>:null}<p>{s.text}</p></div>)}</div>}
+          {showTimestamps?<div className="segment-stamp"><button className="timecode" title="播放此段" onClick={()=>{if(player.current){player.current.currentTime=s.start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}>{clock(s.start)}</button>{s.language ? <span className="language-label">{{zh:"繁體中文",en:"English",mixed:"中英混合",other:"其他"}[s.language]}</span> : null}</div>:null}<div><SpeakerLabel segment={s}/><p>{s.text}</p></div></div>)}</div>}
       </>:<>
         {job.summary_error?<div className="inline-error"><AlertCircle size={17}/><span>{job.summary_error}</span></div>:null}
         {job.summary?<><p className="summary-note">AI 摘要可能有遺漏，請對照時間戳與原始錄音確認。</p><SummaryText text={job.summary}/></>:<div className="small-empty">{job.status==='summarizing'?'正在本機整理摘要，長錄音需要一些時間。':'摘要完成後，會議重點、決議與待辦會顯示在這裡。'}</div>}
@@ -138,7 +147,7 @@ function Help({health}) {
     <h3>模型與速度</h3><p>small 為預設；tiny、base 較快但辨識精度可能較低，medium 需要更多記憶體。可在終端執行 .venv\Scripts\python.exe scripts\download_models.py --whisper medium --skip-summary 下載其他模型。CPU 處理長錄音可能花數小時，請保持啟動視窗開啟。</p>
     <h3>繁體中文與英文逐字稿</h3><p>預設使用「中英混合（繁體）」，適合中文、英文交錯的會議；中文轉為繁體中文，英文保留原文。全中文會議可選「全中文（繁體）」，固定以中文辨識，不在每段重新猜測語言。全英文會議可選「英文」。專有名詞、人名與多人同時發言仍需校對。</p>
     <h3>時間戳與匯出</h3><p>逐字稿與試轉比較都可選擇「顯示時間戳記」或「不顯示時間戳記」，切換不必重新轉錄。TXT 會依目前設定匯出；SRT 作為字幕，仍保留必要的時間資訊。顯示時間戳時可點擊回聽，摘要可下載為 Markdown。時間戳為辨識模型估計，並非逐字精準對齊。</p>
-    <h3>摘要與隱私</h3><p>摘要會讀取完整逐字稿，分類挑出重點、決議、待辦與待確認事項，附上原文及來源時間戳；英文原文也會保留。分類可能有誤或遺漏，重要決議請回聽確認。此版本不自動區分發言者。錄音、暫存音訊與結果保存在專案的 data/jobs；從會議紀錄刪除會移除該份資料。</p>
+    <h3>摘要與隱私</h3><p>摘要會讀取完整逐字稿，分類挑出重點、決議、待辦與待確認事項，附上原文及來源時間戳；英文原文也會保留。分類可能有誤或遺漏，重要決議請回聽確認。可勾選本機講者辨識，或為舊逐字稿補做；標籤是聲音分組，並非姓名辨識。錄音、暫存音訊與結果保存在專案的 data/jobs；從會議紀錄刪除會移除該份資料。</p>
   </section>;
 }
 
@@ -162,12 +171,12 @@ function App() {
     poll();return()=>{live=false;clearTimeout(timer);};
   },[]);
   async function select(id){try{const detail=await api('/jobs/'+id);selectedId.current=id;setJob(detail);setPage('new');}catch(e){notify(e.message);}}
-  async function action(name){try{await api(`/jobs/${job.id}/${name}`,{method:'POST'});setJob(await api('/jobs/'+job.id));}catch(e){notify(e.message);}}
+  async function action(name,payload){try{await api(`/jobs/${job.id}/${name}`,{method:'POST',...(payload?{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{})});setJob(await api('/jobs/'+job.id));}catch(e){notify(e.message);}}
   async function remove(){try{await api('/jobs/'+deleteTarget.id,{method:'DELETE'});setJobs(items=>items.filter(j=>j.id!==deleteTarget.id));if(selectedId.current===deleteTarget.id){selectedId.current=null;setJob(null);}setDeleteTarget(null);}catch(e){notify(e.message);}}
   return <div className="app-shell"><Sidebar page={page} setPage={setPage}/><main>
     <header className="page-header"><div><h1>{page==='new'?'把會議留下，讓重點清楚。':page==='history'?'每一場討論，都有紀錄。':'安心記錄，專注討論。'}</h1><p>{page==='new'?'將錄音轉成逐字稿、時間戳與會議摘要。':page==='history'?'回到會議現場，找到需要的重點。':'本機處理的使用方式與常見問題。'}</p></div><div className="local-mode"><Laptop size={18}/>本機模式</div></header>
     {error?<div role="alert" className="notice"><AlertCircle size={19}/><span>{error}</span><button aria-label="關閉訊息" onClick={()=>setError('')}><X size={17}/></button></div>:null}
-    {page==='new'?<><div className="workspace"><UploadPanel health={health} notify={notify} onCreated={detail=>{selectedId.current=detail.id;setJob(detail);setJobs(prev=>[detail,...prev]);}}/><Workflow/></div>{job?.workflow==='preview'?<NoisePreview job={job} onUpdated={setJob} onAction={action} notify={notify} showTimestamps={showTimestamps} onTimestampsChange={changeTimestamps}/>:<><Results job={job} onAction={action} notify={notify} showTimestamps={showTimestamps} onTimestampsChange={changeTimestamps}/>{job?.noise_mode&&job.preview?.audio_ready?<details className="saved-preview"><summary>查看這份錄音的試轉比較</summary><NoisePreview job={job} onUpdated={setJob} onAction={action} notify={notify} showTimestamps={showTimestamps} onTimestampsChange={changeTimestamps} readonly/></details>:null}</>}</>:page==='history'?<History jobs={jobs} select={select} remove={setDeleteTarget}/>:<Help health={health}/>}
+    {page==='new'?<><div className="workspace"><UploadPanel health={health} notify={notify} onCreated={detail=>{selectedId.current=detail.id;setJob(detail);setJobs(prev=>[detail,...prev]);}}/><Workflow/></div>{job?.workflow==='preview'?<NoisePreview job={job} onUpdated={setJob} onAction={action} notify={notify} showTimestamps={showTimestamps} onTimestampsChange={changeTimestamps}/>:<><Results job={job} health={health} onAction={action} notify={notify} showTimestamps={showTimestamps} onTimestampsChange={changeTimestamps}/>{job?.noise_mode&&job.preview?.audio_ready?<details className="saved-preview"><summary>查看這份錄音的試轉比較</summary><NoisePreview job={job} onUpdated={setJob} onAction={action} notify={notify} showTimestamps={showTimestamps} onTimestampsChange={changeTimestamps} readonly/></details>:null}</>}</>:page==='history'?<History jobs={jobs} select={select} remove={setDeleteTarget}/>:<Help health={health}/>}
     <footer className="mobile-privacy"><ShieldCheck size={15}/>本機處理 · 檔案不上傳</footer>
   </main>{deleteTarget?<div className="modal-backdrop"><div role="dialog" aria-modal="true" aria-labelledby="delete-title" className="dialog"><h2 id="delete-title">刪除這份會議紀錄？</h2><p>「{deleteTarget.filename}」的錄音副本、逐字稿與摘要將從工具中刪除。</p><div><button className="secondary" onClick={()=>setDeleteTarget(null)}>取消</button><button className="primary delete" onClick={remove}>刪除紀錄</button></div></div></div>:null}</div>;
 }

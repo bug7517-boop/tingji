@@ -71,8 +71,12 @@ def timecode(seconds, srt=False):
 
 
 def export_transcript(segments, kind, include_timestamps=True):
+    from .speakers import label
+    def text(segment):
+        name = label(segment)
+        return (f'【{name}】' if name else '') + segment['text']
     if kind == 'srt':
-        return '\n\n'.join(f"{i}\n{timecode(s['start'], True)} --> {timecode(s['end'], True)}\n{s['text']}" for i, s in enumerate(segments, 1)) + '\n'
+        return '\n\n'.join(f"{i}\n{timecode(s['start'], True)} --> {timecode(s['end'], True)}\n{text(s)}" for i, s in enumerate(segments, 1)) + '\n'
     if not include_timestamps:
-        return '\n'.join(s['text'] for s in segments) + '\n'
-    return '\n'.join(f"[{timecode(s['start'])} → {timecode(s['end'])}] {s['text']}" for s in segments) + '\n'
+        return '\n'.join(text(s) for s in segments) + '\n'
+    return '\n'.join(f"[{timecode(s['start'])} → {timecode(s['end'])}] {text(s)}" for s in segments) + '\n'
