@@ -85,8 +85,12 @@ class LocalSummarizer:
     def select_records(self, records, key_only=False):
         self.start()
         ids = [r['id'] for r in records]
+        # A reduction must retain at least one existing source; an empty array
+        # would otherwise erase every point selected in the first pass.
         schema = {'type': 'object', 'properties': {
-            key: {'type': 'array', 'items': {'type': 'integer', 'enum': ids}, 'maxItems': len(ids)}
+            key: {'type': 'array', 'items': {'type': 'integer', 'enum': ids},
+                  'minItems': 1 if key_only and key == 'key_points' and ids else 0,
+                  'maxItems': min(len(ids), 4 if key_only else 6) if key == 'key_points' else 0 if key_only else len(ids)}
             for key in CATEGORIES}, 'required': list(CATEGORIES), 'additionalProperties': False}
         instruction = ('只從下列候選重點挑選最多4個最重要的編號放入 key_points，其他陣列為空。' if key_only else
                        '請選出重點、決議、待辦與待確認的發言編號，回傳JSON，不要新增文字。')
