@@ -16,7 +16,7 @@ export function SpeakerCount({value, onChange, disabled, label='講者人數'}) 
 }
 
 export function SpeakerLabel({segment, names={}}) {
-  if (!Object.hasOwn(segment,'speaker')) return null;
+  if (!Object.hasOwn(segment,'speaker')) return <span className="speaker-label uncertain">講者待辨識</span>;
   const ids=segment.speakers?.length?segment.speakers:segment.speaker?[segment.speaker]:[];
   return <span className={`speaker-label ${ids.length!==1?'uncertain':''}`}>
     {ids.length?ids.map(id=>names[id] || '講者 '+id.replace('speaker_','')).join('／'):'講者未辨識'}

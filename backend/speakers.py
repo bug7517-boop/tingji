@@ -15,6 +15,57 @@ def ready():
 
 
 def detect(path, count=0, cancelled=lambda: False, progress=lambda _: None):
+    """Keep native clustering and its GIL/memory outside the web server."""
+    import json
+    import os
+    import subprocess
+    import sys
+    import tempfile
+    import time
+    if not ready():
+        raise RuntimeError('講者模型尚未就緒，請執行「下載講者模型.cmd」。')
+    if cancelled():
+        raise InterruptedError()
+    workspace = ROOT / 'data'
+    workspace.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='speaker-worker-', dir=workspace) as folder:
+        folder = Path(folder)
+        with (folder / 'worker.log').open('wb') as log:
+            child = subprocess.Popen([sys.executable, '-m', 'backend.speaker_worker', str(Path(path).resolve()),
+                                      str(count), str(folder)], cwd=str(ROOT), stdout=log, stderr=log,
+                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            last = None
+            try:
+                while child.poll() is None:
+                    if cancelled():
+                        raise InterruptedError()
+                    try:
+                        updates = list(folder.glob('progress-*.json'))
+                        ratio = json.loads(max(updates).read_text(encoding='utf-8')) if updates else 0
+                        if ratio != last:
+                            progress(ratio)
+                            last = ratio
+                    except (FileNotFoundError, ValueError, PermissionError):
+                        pass
+                    time.sleep(0.2)
+                if cancelled():
+                    raise InterruptedError()
+                result = folder / 'result.json'
+                if child.returncode != 0 or not result.exists():
+                    (workspace / 'speaker-engine.log').write_bytes((folder / 'worker.log').read_bytes())
+                    raise RuntimeError('講者分析程序未完成，可能是記憶體不足或模型無法載入；逐字稿已保留，請重試。')
+                return json.loads(result.read_text(encoding='utf-8'))
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                    try:
+                        child.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
+
+
+def detect_local(path, count=0, cancelled=lambda: False, progress=lambda _: None):
     import numpy as np
     import sherpa_onnx as sherpa
     if not ready():

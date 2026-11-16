@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AudioLines, Mic, FileText, BookOpen, ShieldCheck, Laptop, Upload, FileUp, Check, X, Pause, Play, RefreshCw, Download, Search, Trash2, LoaderCircle, ArrowRight, AlertCircle } from 'lucide-react';
 import { api, active, clock, statusText } from './api';
 import './style.css';
 import NoisePreview, { profileName } from './NoisePreview';
 import TranscriptDisplay from './TranscriptDisplay';
+import { ParagraphRow, BatchCorrection, buildParagraphs } from './TranscriptEditor';
 import { SpeakerCount, SpeakerLabel, SpeakerNames, SegmentSpeaker, knownSpeakerIds } from './Speakers';
 
 function Sidebar({page, setPage}) {
@@ -23,6 +24,7 @@ function UploadPanel({health, onCreated, notify}) {
   const [noiseMode,setNoiseMode] = useState(false), [trialStart,setTrialStart] = useState(0);
   const [trialMinutes,setTrialMinutes] = useState(3), [noiseProfile,setNoiseProfile] = useState('standard');
   const [diarization,setDiarization] = useState(false), [speakerCount,setSpeakerCount] = useState(0);
+  useEffect(()=>{if(health?.speakers_ready)setDiarization(true);},[health?.speakers_ready]);
   const input = useRef(null), request = useRef(null);
   useEffect(() => () => request.current?.abort(), []);
   const choose = chosen => {
@@ -100,11 +102,13 @@ function Results({job, health, onAction, notify, showTimestamps, onTimestampsCha
   const [tab,setTab] = useState('transcript'), [query,setQuery] = useState('');
   const [current,setCurrent] = useState(0);
   const [speakerCount,setSpeakerCount] = useState(0);
+  const [paragraphSeconds,setParagraphSeconds]=useState(()=>{try{const value=Number(localStorage.getItem('tingji.paragraphs.v1')??30);return [0,30,60].includes(value)?value:30;}catch{return 30;}});
+  function changeParagraphs(value){setParagraphSeconds(value);try{localStorage.setItem('tingji.paragraphs.v1',String(value));}catch{}}
   const player = useRef(null);
   useEffect(()=>{setTab('transcript');setQuery('');setCurrent(0);},[job?.id]);
   useEffect(()=>setSpeakerCount(job?.speaker_count || 0),[job?.id,job?.speaker_count]);
-  const download = kind => {window.location.href=`/api/jobs/${job.id}/export/${kind}${kind==='txt'?`?timestamps=${showTimestamps}`:''}`;};
-  const rows = job?.segments?.map((s,segmentIndex)=>({...s,segmentIndex})).filter(s=>s.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())) || [];
+  const download = kind => {window.location.href=`/api/jobs/${job.id}/export/${kind}${kind==='txt'?`?timestamps=${showTimestamps}&paragraphs=${paragraphSeconds}`:''}`;};
+  const rows = useMemo(()=>buildParagraphs(job?.segments || [],paragraphSeconds).filter(s=>s.text.toLocaleLowerCase().includes(query.toLocaleLowerCase())),[job?.segments,paragraphSeconds,query]);
   const isActive=job&&active(job.status);
   const speakerIds=job?knownSpeakerIds(job):[];
   return <section className="results panel" aria-label="轉錄結果">
@@ -119,13 +123,14 @@ function Results({job, health, onAction, notify, showTimestamps, onTimestampsCha
       {job.error?<div className="inline-error"><AlertCircle size={17}/><span>{job.error}</span></div>:null}
       {job.noise_mode?<p className="applied-profile">雜音錄音模式 · 整份處理使用{profileName[job.audio_profile] || '原音'} · 時間戳對應原始錄音</p>:null}
       {job.audio_ready?<div className="player"><audio key={`${job.id}-${job.audio_profile || 'original'}`} ref={player} src={`/api/jobs/${job.id}/audio`} controls preload="metadata" onTimeUpdate={e=>setCurrent(e.target.currentTime)}/><span>{showTimestamps?'點選時間戳可跳至錄音位置':'可使用播放器回聽錄音'}</span></div>:null}
-      <div role="tabpanel" className="result-body">
+      <div role="tabpanel" className="result-body">{job.summary_stale?<p className="summary-stale">逐字稿已校正；現有摘要尚未更新，請按「重新產生摘要」。</p>:null}
       {tab==='transcript'?<>
+        {!job.speakers_done?<p className="speaker-pending">{job.status==='diarizing'?'講者分析進行中，完成後會顯示講者；目前文字已保存。':job.diarization?'已啟用講者辨識，完整逐字稿完成後會分析講者。':'這份錄音尚未辨識講者。逐字稿完成後可按「辨識講者」補做。'}</p>:null}
+        <BatchCorrection key={'batch-'+job.id} job={job} disabled={isActive||!job.transcript_done} onAction={onAction} notify={notify}/>
         {job.transcript_done&&job.segments.length?<div className="speaker-tools"><div className="speaker-actions"><SpeakerCount label="補做講者人數" value={speakerCount} onChange={setSpeakerCount} disabled={isActive}/><button className="secondary compact" disabled={isActive||!health?.speakers_ready} onClick={()=>onAction('speakers',{count:speakerCount})}>{job.speakers_done?'重新辨識講者':'辨識講者'}</button></div><p>{job.speakers_done?'講者編號只適用這份錄音；交接或重疊的段落請回聽確認。':'可在保留文字與時間戳的情況下，為這份逐字稿補上講者標籤。'}{!health?.speakers_ready?' 請先執行 setup.cmd 及「下載講者模型.cmd」。':''}</p>{job.speaker_error?<div className="inline-error" role="alert">{job.speaker_error}</div>:null}</div>:null}
-        <SpeakerNames key={job.id} job={job} disabled={isActive} onSave={names=>onAction('speaker-names',{names},'PATCH')}/><div className="transcript-tools"><span>TXT 依此設定匯出；SRT 保留字幕時間</span><TranscriptDisplay showTimestamps={showTimestamps} onChange={onTimestampsChange}/></div>
-        {job.segments.length?<label className="search"><Search size={17}/><input aria-label="搜尋逐字稿" value={query} placeholder="搜尋逐字稿…" onChange={e=>setQuery(e.target.value)}/><span>{rows.length} 段</span></label>:null}
-        {!rows.length?<div className="small-empty">{job.segments.length?'找不到符合的文字。':job.transcript_done?'未偵測到可辨識的語音。':'正在等待辨識結果，完成一段就會保存。'}</div>:<div className="segments">{rows.map((s,i)=><div key={job.id+'-'+s.segmentIndex} className={`segment ${current>=s.start&&current<s.end?'playing':''}`}>
-          {showTimestamps?<div className="segment-stamp"><button className="timecode" title="播放此段" onClick={()=>{if(player.current){player.current.currentTime=s.start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}>{clock(s.start)}</button>{s.language ? <span className="language-label">{{zh:"繁體中文",en:"English",mixed:"中英混合",other:"其他"}[s.language]}</span> : null}</div>:null}<div><SpeakerLabel segment={s} names={job.speaker_names || {}}/><p>{s.text}</p>{speakerIds.length?<SegmentSpeaker segment={s} ids={speakerIds} names={job.speaker_names || {}} disabled={isActive} onSave={payload=>onAction(`segments/${s.segmentIndex}/speaker`,payload,'PATCH')}/>:null}</div></div>)}</div>}
+        <SpeakerNames key={'names-'+job.id} job={job} disabled={isActive} onSave={names=>onAction('speaker-names',{names},'PATCH')}/><div className="transcript-tools"><span>TXT 依此設定匯出；SRT 保留字幕時間</span><TranscriptDisplay showTimestamps={showTimestamps} onChange={onTimestampsChange}/></div>
+        <label className="paragraph-setting">閱讀分段<select aria-label="閱讀分段" value={paragraphSeconds} onChange={e=>changeParagraphs(Number(e.target.value))}><option value="0">原始細分段</option><option value="30">較長段落（約 30 秒）</option><option value="60">較長段落（約 60 秒）</option></select></label><p className="editor-hint">同一講者合併閱讀；TXT 跟隨閱讀分段，SRT 保留原始字幕時間。編輯時可依時間小段校正。</p>{job.segments.length?<label className="search"><Search size={17}/><input aria-label="搜尋逐字稿" value={query} placeholder="搜尋逐字稿…" onChange={e=>setQuery(e.target.value)}/><span>{rows.length} 段</span></label>:null}
+        {!rows.length?<div className="small-empty">{job.segments.length?'找不到符合的文字。':job.transcript_done?'未偵測到可辨識的語音。':'正在等待辨識結果，完成一段就會保存。'}</div>:<div className="segments">{rows.map(group=><ParagraphRow key={job.id+'-'+group.parts.map(p=>p.segmentIndex).join('-')} group={group} job={job} ids={speakerIds} disabled={isActive||!job.transcript_done} current={current} showTimestamps={showTimestamps} onAction={onAction} seek={start=>{if(player.current){player.current.currentTime=start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}/>)}</div>}
       </>:<>
         {job.summary_error?<div className="inline-error"><AlertCircle size={17}/><span>{job.summary_error}</span></div>:null}
         {job.summary?<><p className="summary-note">AI 摘要可能有遺漏，請對照時間戳與原始錄音確認。</p><SummaryText text={job.summary}/></>:<div className="small-empty">{job.status==='summarizing'?'正在本機整理摘要，長錄音需要一些時間。':'摘要完成後，會議重點、決議與待辦會顯示在這裡。'}</div>}

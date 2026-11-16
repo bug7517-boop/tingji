@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import audio, summary, transcription, noise, speakers
+from . import audio, summary, transcription, noise, speakers, transcript
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = Path(os.environ.get('TINGJI_DATA', str(ROOT / 'data')))
@@ -210,7 +210,8 @@ def process(job_id, action='transcribe'):
                 turns = job.get('speaker_turns')
                 if turns is None:
                     turns = speakers.detect(normalized, job.get('speaker_count', 0), event.is_set,
-                        lambda ratio: update(job_id, progress=round(ratio * 100, 1)))
+                        lambda ratio: update(job_id, progress=round(ratio * 95, 1), message=
+                            '正在比對整份錄音的講者聲音，完成後顯示講者標籤' if ratio >= 1 else '正在分析語音區間與講者聲音'))
                     update(job_id, speaker_turns=turns)
                 if event.is_set():
                     raise InterruptedError()
@@ -236,7 +237,7 @@ def process(job_id, action='transcribe'):
                     lambda parts: update(job_id, summary_parts=parts),
                     lambda msg: update(job_id, message=msg), event.is_set, engine)
                 from opencc import OpenCC
-                update(job_id, summary=OpenCC('s2twp').convert(result))
+                update(job_id, summary=OpenCC('s2twp').convert(result), summary_stale=False)
             except InterruptedError:
                 raise
             except Exception as exc:
@@ -427,6 +428,90 @@ def regenerate_summary(job_id: str):
     return {'ok': True}
 
 
+class TextCorrection(BaseModel):
+    index: int = Field(ge=0)
+    start: float
+    end: float
+    expected_text: str = Field(max_length=10000)
+    text: str = Field(min_length=1, max_length=10000)
+
+
+class TextCorrections(BaseModel):
+    edits: list[TextCorrection] = Field(min_length=1, max_length=100)
+
+
+@app.patch('/api/jobs/{job_id}/segments/text')
+def correct_text(job_id: str, settings: TextCorrections):
+    with LOCK:
+        job = read(job_id)
+        if job['status'] in ACTIVE or not job.get('transcript_done'):
+            raise HTTPException(409, '請等待逐字稿完成後再校正文字。')
+        if len({edit.index for edit in settings.edits}) != len(settings.edits):
+            raise HTTPException(400, '同一段落不能重複修改。')
+        validated = []
+        for edit in settings.edits:
+            if edit.index >= len(job['segments']):
+                raise HTTPException(404, '找不到這段逐字稿，請重新整理。')
+            segment = job['segments'][edit.index]
+            if (segment['start'], segment['end'], segment['text']) != (edit.start, edit.end, edit.expected_text):
+                raise HTTPException(409, '文字已更新，請重新開啟編輯以避免覆蓋其他修改。')
+            text = edit.text.replace('\r\n', '\n').strip()
+            if not text or any((ord(c) < 32 and c not in '\n\t') or ord(c) == 127 for c in text):
+                raise HTTPException(400, '文字不能空白或包含無效控制字元。')
+            validated.append((segment, text))
+        if transcript.apply_text(job, validated):
+            write(job)
+    return {'ok': True}
+
+
+class Replacement(BaseModel):
+    find: str = Field(min_length=1, max_length=2000)
+    replace: str = Field(max_length=2000)
+    revision: str | None = None
+
+
+def replacement_plan(job, settings):
+    if job['status'] in ACTIVE or not job.get('transcript_done'):
+        raise HTTPException(409, '請等待逐字稿完成後再批次修正。')
+    if any(ord(c) < 32 or ord(c) == 127 for c in settings.find + settings.replace):
+        raise HTTPException(400, '批次替換不能包含換行或控制字元。')
+    changes, preview, count = [], [], 0
+    for index, segment in enumerate(job['segments']):
+        occurrences = segment['text'].count(settings.find)
+        if not occurrences:
+            continue
+        text = segment['text'].replace(settings.find, settings.replace).strip()
+        if not text:
+            raise HTTPException(400, '替換會使某段內容空白，請改用逐段編輯。')
+        if len(text) > 10000:
+            raise HTTPException(400, '替換後單段文字超過 10000 字。')
+        changes.append((segment, text))
+        count += occurrences
+        if len(preview) < 5:
+            preview.append({'index': index, 'before': segment['text'], 'after': text})
+    return changes, {'occurrences': count, 'segments': len(changes), 'preview': preview,
+                     'revision': transcript.revision(job['segments'])}
+
+
+@app.post('/api/jobs/{job_id}/text-replacements/preview')
+def preview_replacement(job_id: str, settings: Replacement):
+    with LOCK:
+        _, result = replacement_plan(read(job_id), settings)
+        return result
+
+
+@app.patch('/api/jobs/{job_id}/text-replacements')
+def replace_text(job_id: str, settings: Replacement):
+    with LOCK:
+        job = read(job_id)
+        changes, result = replacement_plan(job, settings)
+        if not settings.revision or settings.revision != result['revision']:
+            raise HTTPException(409, '逐字稿已變更，請重新預覽後再套用。')
+        if transcript.apply_text(job, changes):
+            write(job)
+        return {'ok': True, 'occurrences': result['occurrences'], 'segments': result['segments']}
+
+
 class SpeakerNames(BaseModel):
     names: dict[str, str] = Field(max_length=100)
 
@@ -595,9 +680,11 @@ def get_audio(job_id: str):
 
 
 @app.get('/api/jobs/{job_id}/export/{kind}')
-def export(job_id: str, kind: str, timestamps: bool = True):
+def export(job_id: str, kind: str, timestamps: bool = True, paragraphs: int = 0):
     from urllib.parse import quote
     job = read(job_id)
+    if paragraphs not in {0, 30, 60}:
+        raise HTTPException(400, '閱讀分段只支援原始、30 秒或 60 秒。')
     if kind == 'summary':
         if not job['summary']:
             raise HTTPException(409, '摘要尚未完成。')
@@ -605,7 +692,8 @@ def export(job_id: str, kind: str, timestamps: bool = True):
     elif kind in {'txt', 'srt'}:
         if not job['segments']:
             raise HTTPException(409, '目前還沒有可匯出的逐字稿。')
-        body, ext = audio.export_transcript(job['segments'], kind, include_timestamps=timestamps,
+        segments = transcript.paragraphs(job['segments'], paragraphs) if kind == 'txt' and paragraphs else job['segments']
+        body, ext = audio.export_transcript(segments, kind, include_timestamps=timestamps,
                                           speaker_names=job.get('speaker_names')), kind
     elif kind == 'json':
         body, ext = json.dumps(public(job), ensure_ascii=False, indent=2), 'json'
