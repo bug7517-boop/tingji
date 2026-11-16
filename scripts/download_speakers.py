@@ -58,5 +58,18 @@ def main():
     print('Speaker models ready. Restart Tingji to use speaker labels.', flush=True)
 
 
+def advanced():
+    TARGET.mkdir(parents=True,exist_ok=True)
+    target=TARGET/'eres2netv2.onnx'
+    if not target.exists():
+        source=download('speaker-recongition-models','3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx',target)
+        metadata=TARGET/'sources.json'
+        sources=json.loads(metadata.read_text(encoding='utf-8')) if metadata.exists() else {}
+        sources['eres2netv2']=source
+        metadata.write_text(json.dumps(sources,indent=2),encoding='utf-8')
+    print('Advanced speaker model ready (~68 MB).',flush=True)
+
+
 if __name__ == '__main__':
-    main()
+    import sys
+    advanced() if '--advanced' in sys.argv else main()

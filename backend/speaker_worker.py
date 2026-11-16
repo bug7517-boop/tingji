@@ -15,7 +15,12 @@ def main():
         if percent != last:
             (folder / f'progress-{percent:03}.json').write_text(json.dumps(ratio), encoding='utf-8')
             last = percent
-    turns = detect_local(source, count, progress=progress)
+    if (folder/'refinement.json').exists():
+        from .speaker_refinement import optimize_local
+        job=json.loads((folder/'refinement.json').read_text(encoding='utf-8'))
+        turns=optimize_local(source,job,progress)
+    else:
+        turns = detect_local(source, count, progress=progress)
     (folder / 'result.json').write_text(json.dumps(turns), encoding='utf-8')
 
 

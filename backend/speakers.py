@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODELS = ROOT / 'models' / 'speakers'
 SEGMENTATION = MODELS / 'segmentation.onnx'
 EMBEDDING = MODELS / 'embedding.onnx'
+ADVANCED = MODELS / 'eres2netv2.onnx'
 
 
 def ready():
@@ -15,6 +16,14 @@ def ready():
 
 
 def detect(path, count=0, cancelled=lambda: False, progress=lambda _: None):
+    return _worker(path,count,cancelled,progress)
+
+
+def optimize(path, job, cancelled=lambda: False, progress=lambda _: None):
+    return _worker(path,job.get('speaker_count',0),cancelled,progress,job)
+
+
+def _worker(path, count, cancelled, progress, refinement=None):
     """Keep native clustering and its GIL/memory outside the web server."""
     import json
     import os
@@ -30,6 +39,8 @@ def detect(path, count=0, cancelled=lambda: False, progress=lambda _: None):
     workspace.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='speaker-worker-', dir=workspace) as folder:
         folder = Path(folder)
+        if refinement is not None:
+            (folder/'refinement.json').write_text(json.dumps(refinement,ensure_ascii=False),encoding='utf-8')
         with (folder / 'worker.log').open('wb') as log:
             child = subprocess.Popen([sys.executable, '-m', 'backend.speaker_worker', str(Path(path).resolve()),
                                       str(count), str(folder)], cwd=str(ROOT), stdout=log, stderr=log,
@@ -65,7 +76,7 @@ def detect(path, count=0, cancelled=lambda: False, progress=lambda _: None):
                         child.wait()
 
 
-def detect_local(path, count=0, cancelled=lambda: False, progress=lambda _: None):
+def detect_local(path, count=0, cancelled=lambda: False, progress=lambda _: None, embedding_model=None):
     import numpy as np
     import sherpa_onnx as sherpa
     if not ready():
@@ -76,7 +87,7 @@ def detect_local(path, count=0, cancelled=lambda: False, progress=lambda _: None
         segmentation=sherpa.OfflineSpeakerSegmentationModelConfig(
             pyannote=sherpa.OfflineSpeakerSegmentationPyannoteModelConfig(model=str(SEGMENTATION)),
             num_threads=2, provider='cpu'),
-        embedding=sherpa.SpeakerEmbeddingExtractorConfig(model=str(EMBEDDING), num_threads=2, provider='cpu'),
+        embedding=sherpa.SpeakerEmbeddingExtractorConfig(model=str(embedding_model or (ADVANCED if ADVANCED.exists() else EMBEDDING)), num_threads=2, provider='cpu'),
         clustering=sherpa.FastClusteringConfig(num_clusters=count if count else -1, threshold=0.5),
         min_duration_on=0.3, min_duration_off=0.5)
     if not config.validate():
@@ -130,7 +141,8 @@ def label_segments(segments, turns):
         ranked = sorted(scores, key=scores.get, reverse=True)
         selected = [s for s in ranked if scores[s] >= max(0.2, (segment['end'] - segment['start']) * 0.15)]
         # Very short or unaligned speech remains explicitly unknown.
-        clean = {k: v for k, v in segment.items() if k not in {'speaker_original', 'speaker_manual'}}
+        clean = {k: v for k, v in segment.items() if k not in {'speaker_original', 'speaker_manual','quality_review',
+            'speaker_optimized','speaker_match_score','speaker_match_margin'}}
         result.append({**clean, 'speaker': selected[0] if len(selected) == 1 else None,
                        'speakers': selected, 'speaker_uncertain': len(selected) != 1})
     return result
@@ -152,4 +164,4 @@ def label(segment, names=None):
     if not ids:
         return '講者未辨識' if 'speaker' in segment else ''
     display = '／'.join((names or {}).get(value) or '講者 ' + value.removeprefix('speaker_') for value in ids)
-    return display + ('（交接或重疊，請回聽）' if len(ids) > 1 else '')
+    return display + ('（交接或重疊，請回聽）' if len(ids) > 1 else '（待確認）' if segment.get('quality_review') else '')

@@ -17,7 +17,7 @@ def paragraphs(segments, seconds=30):
     result = []
     for index, segment in enumerate(segments):
         ids = segment.get('speakers') or ([segment['speaker']] if segment.get('speaker') else [])
-        signature = (tuple(sorted(ids)), 'speaker' in segment)
+        signature = (tuple(sorted(ids)), 'speaker' in segment, bool(segment.get('quality_review')))
         if (not result or not seconds or result[-1]['signature'] != signature or
                 segment['end'] - result[-1]['start'] > seconds or segment['start'] - result[-1]['end'] > 3 or
                 len(result[-1]['parts']) >= 50):

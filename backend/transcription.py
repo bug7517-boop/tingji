@@ -10,7 +10,7 @@ def text_language(text):
     return 'zh' if chinese else 'en' if english else 'other'
 
 
-def transcribe_regions(model, pcm, language, cancelled=lambda: False):
+def transcribe_regions(model, pcm, language, cancelled=lambda: False, terms=None):
     from faster_whisper.vad import VadOptions, get_speech_timestamps
     regions = get_speech_timestamps(pcm, VadOptions(
         min_silence_duration_ms=500, speech_pad_ms=300, max_speech_duration_s=30))
@@ -20,9 +20,11 @@ def transcribe_regions(model, pcm, language, cancelled=lambda: False):
         # zh is the bilingual UI mode: do not force Chinese on English speech.
         detect = language in {'zh', 'auto'}
         selected_language = 'zh' if language == 'zh-only' else language
+        from .glossary import hints
+        extra={'hotwords':hints(terms)} if terms else {}
         segments, _ = model.transcribe(pcm[region['start']:region['end']],
             language=None if detect else selected_language, multilingual=detect,
-            beam_size=5, vad_filter=False, condition_on_previous_text=False, task='transcribe')
+            beam_size=5, vad_filter=False, condition_on_previous_text=False, task='transcribe', **extra)
         offset = region['start'] / 16000
         for segment in segments:
             if cancelled():

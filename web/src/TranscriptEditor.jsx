@@ -13,7 +13,7 @@ export function buildParagraphs(segments, seconds){
   const groups=[];
   segments.forEach((segment,segmentIndex)=>{
     const ids=segment.speakers?.length?segment.speakers:segment.speaker?[segment.speaker]:[];
-    const signature=JSON.stringify([[...ids].sort(),Object.hasOwn(segment,'speaker')]);
+    const signature=JSON.stringify([[...ids].sort(),Object.hasOwn(segment,'speaker'),Boolean(segment.quality_review)]);
     let group=groups.at(-1);
     if(!group||!seconds||group.signature!==signature||segment.end-group.start>seconds||segment.start-group.end>3||group.parts.length>=50){
       group={...segment,parts:[],signature,segmentIndex};groups.push(group);

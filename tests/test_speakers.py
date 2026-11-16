@@ -205,7 +205,8 @@ def test_correction_keeps_catalog_and_rejects_stale_or_invalid_targets(stored):
 
 def test_new_diarization_removes_old_manual_corrections():
     segments = [{'start': 1, 'end': 2, 'text': '原文', 'speaker': 'speaker_1', 'speaker_manual': True,
-                 'speaker_original': {'speaker': 'speaker_2'}}]
+                 'speaker_original': {'speaker': 'speaker_2'},'quality_review':True,'speaker_optimized':True}]
     result = speakers.label_segments(segments, [{'start': 0, 'end': 3, 'speaker': 'speaker_3'}])
     assert result[0]['speaker'] == 'speaker_3'
     assert 'speaker_manual' not in result[0] and 'speaker_original' not in result[0]
+    assert 'quality_review' not in result[0] and 'speaker_optimized' not in result[0]

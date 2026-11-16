@@ -5,6 +5,8 @@ import { api, active, clock, statusText } from './api';
 import './style.css';
 import NoisePreview, { profileName } from './NoisePreview';
 import TranscriptDisplay from './TranscriptDisplay';
+import SpeakerQuality from './SpeakerQuality';
+import DomainGlossary from './DomainGlossary';
 import { ParagraphRow, BatchCorrection, buildParagraphs } from './TranscriptEditor';
 import { SpeakerCount, SpeakerLabel, SpeakerNames, SegmentSpeaker, knownSpeakerIds } from './Speakers';
 
@@ -24,6 +26,8 @@ function UploadPanel({health, onCreated, notify}) {
   const [noiseMode,setNoiseMode] = useState(false), [trialStart,setTrialStart] = useState(0);
   const [trialMinutes,setTrialMinutes] = useState(3), [noiseProfile,setNoiseProfile] = useState('standard');
   const [diarization,setDiarization] = useState(false), [speakerCount,setSpeakerCount] = useState(0);
+  const [domain,setDomain]=useState(()=>{try{return localStorage.getItem('tingji.domain.v1') || 'real_estate';}catch{return 'real_estate';}}),[glossaryText,setGlossaryText]=useState('');
+  function changeDomain(value){setDomain(value);try{localStorage.setItem('tingji.domain.v1',value);}catch{}}
   useEffect(()=>{if(health?.speakers_ready)setDiarization(true);},[health?.speakers_ready]);
   const input = useRef(null), request = useRef(null);
   useEffect(() => () => request.current?.abort(), []);
@@ -41,7 +45,7 @@ function UploadPanel({health, onCreated, notify}) {
     form.append('file',file); form.append('language',language); form.append('model',model); form.append('auto_summary',String(summary));
     form.append('noise_mode',String(noiseMode)); form.append('preview_start',String(Number(trialStart)*60));
     form.append('preview_minutes',String(trialMinutes)); form.append('noise_profile',noiseProfile);
-    form.append('diarization',String(diarization)); form.append('speaker_count',String(speakerCount));
+    form.append('diarization',String(diarization)); form.append('speaker_count',String(speakerCount)); form.append('domain',domain);form.append('glossary_extra',glossaryText);form.append('glossary_source','provided');
     setBusy(true); setPercent(0);
     const xhr = new XMLHttpRequest(); request.current = xhr;
     xhr.open('POST','/api/jobs');
@@ -77,7 +81,7 @@ function UploadPanel({health, onCreated, notify}) {
       <label>試轉長度<select aria-label="試轉長度" value={trialMinutes} disabled={busy} onChange={e=>setTrialMinutes(Number(e.target.value))}>{[3,4,5].map(m=><option key={m} value={m}>{m} 分鐘</option>)}</select></label>
       <label>降噪強度<select aria-label="降噪強度" value={noiseProfile} disabled={busy} onChange={e=>setNoiseProfile(e.target.value)}><option value="light">輕度降噪</option><option value="standard">標準降噪</option></select></label>
     </div></div> : null}
-    <div className="speaker-option"><label className="check-label"><input type="checkbox" checked={diarization} disabled={busy||!health?.speakers_ready} onChange={e=>setDiarization(e.target.checked)}/>區分不同講者（本機辨識）</label>
+    <DomainGlossary domain={domain} onDomainChange={changeDomain} text={glossaryText} onTextChange={setGlossaryText} disabled={busy} notify={notify}/><div className="speaker-option"><label className="check-label"><input type="checkbox" checked={diarization} disabled={busy||!health?.speakers_ready} onChange={e=>setDiarization(e.target.checked)}/>區分不同講者（本機辨識）</label>
       {diarization?<SpeakerCount value={speakerCount} onChange={setSpeakerCount} disabled={busy}/>:null}
       <p>{health?.speakers_ready?'以「講者 1、講者 2」標示，不辨識姓名。已知人數時可指定；雜音模式會在整份轉錄後辨識講者。':'請先執行 setup.cmd 及「下載講者模型.cmd」，再重新啟動服務。'}</p></div>
     {missing?<p className="setup-note"><AlertCircle size={15}/>請先執行「下載模型.cmd」準備 {model} 模型。</p>:null}
@@ -128,7 +132,7 @@ function Results({job, health, onAction, notify, showTimestamps, onTimestampsCha
         {!job.speakers_done?<p className="speaker-pending">{job.status==='diarizing'?'講者分析進行中，完成後會顯示講者；目前文字已保存。':job.diarization?'已啟用講者辨識，完整逐字稿完成後會分析講者。':'這份錄音尚未辨識講者。逐字稿完成後可按「辨識講者」補做。'}</p>:null}
         <BatchCorrection key={'batch-'+job.id} job={job} disabled={isActive||!job.transcript_done} onAction={onAction} notify={notify}/>
         {job.transcript_done&&job.segments.length?<div className="speaker-tools"><div className="speaker-actions"><SpeakerCount label="補做講者人數" value={speakerCount} onChange={setSpeakerCount} disabled={isActive}/><button className="secondary compact" disabled={isActive||!health?.speakers_ready} onClick={()=>onAction('speakers',{count:speakerCount})}>{job.speakers_done?'重新辨識講者':'辨識講者'}</button></div><p>{job.speakers_done?'講者編號只適用這份錄音；交接或重疊的段落請回聽確認。':'可在保留文字與時間戳的情況下，為這份逐字稿補上講者標籤。'}{!health?.speakers_ready?' 請先執行 setup.cmd 及「下載講者模型.cmd」。':''}</p>{job.speaker_error?<div className="inline-error" role="alert">{job.speaker_error}</div>:null}</div>:null}
-        <SpeakerNames key={'names-'+job.id} job={job} disabled={isActive} onSave={names=>onAction('speaker-names',{names},'PATCH')}/><div className="transcript-tools"><span>TXT 依此設定匯出；SRT 保留字幕時間</span><TranscriptDisplay showTimestamps={showTimestamps} onChange={onTimestampsChange}/></div>
+        <SpeakerQuality key={'quality-'+job.id} job={job} health={health} disabled={isActive} onAction={onAction} notify={notify}/><SpeakerNames key={'names-'+job.id} job={job} disabled={isActive} onSave={names=>onAction('speaker-names',{names},'PATCH')}/><div className="transcript-tools"><span>TXT 依此設定匯出；SRT 保留字幕時間</span><TranscriptDisplay showTimestamps={showTimestamps} onChange={onTimestampsChange}/></div>
         <label className="paragraph-setting">閱讀分段<select aria-label="閱讀分段" value={paragraphSeconds} onChange={e=>changeParagraphs(Number(e.target.value))}><option value="0">原始細分段</option><option value="30">較長段落（約 30 秒）</option><option value="60">較長段落（約 60 秒）</option></select></label><p className="editor-hint">同一講者合併閱讀；TXT 跟隨閱讀分段，SRT 保留原始字幕時間。編輯時可依時間小段校正。</p>{job.segments.length?<label className="search"><Search size={17}/><input aria-label="搜尋逐字稿" value={query} placeholder="搜尋逐字稿…" onChange={e=>setQuery(e.target.value)}/><span>{rows.length} 段</span></label>:null}
         {!rows.length?<div className="small-empty">{job.segments.length?'找不到符合的文字。':job.transcript_done?'未偵測到可辨識的語音。':'正在等待辨識結果，完成一段就會保存。'}</div>:<div className="segments">{rows.map(group=><ParagraphRow key={job.id+'-'+group.parts.map(p=>p.segmentIndex).join('-')} group={group} job={job} ids={speakerIds} disabled={isActive||!job.transcript_done} current={current} showTimestamps={showTimestamps} onAction={onAction} seek={start=>{if(player.current){player.current.currentTime=start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}/>)}</div>}
       </>:<>

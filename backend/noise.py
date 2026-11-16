@@ -104,7 +104,7 @@ def enhance(source: Path, target: Path, profile: str, cancelled=lambda: False, p
         raise
 
 
-def transcribe_clip(model, path: Path, language: str, offset: float, cancelled=lambda: False):
+def transcribe_clip(model, path: Path, language: str, offset: float, cancelled=lambda: False, terms=None):
     from opencc import OpenCC
     from . import audio, transcription
     pcm, _ = audio.read_chunk(path, 0)
@@ -112,7 +112,8 @@ def transcribe_clip(model, path: Path, language: str, offset: float, cancelled=l
         duration = inp.getnframes() / SAMPLE_RATE
     convert = OpenCC('s2twp').convert
     result = []
-    for start, end, raw in transcription.transcribe_regions(model, pcm, language, cancelled):
+    extra={'terms':terms} if terms else {}
+    for start, end, raw in transcription.transcribe_regions(model, pcm, language, cancelled, **extra):
         text = convert(raw.strip())
         start = max(0, start)
         end = min(duration, end)
