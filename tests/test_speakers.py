@@ -110,3 +110,49 @@ def test_pause_resumes_saved_turns_without_repeating_inference(stored, monkeypat
     monkeypatch.setattr(speakers, 'detect', lambda *args: pytest.fail('must reuse saved turns'))
     service.process(stored, 'speakers')
     assert service.read(stored)['speakers_done']
+
+
+def test_rename_persists_and_all_exports_use_names(stored):
+    segments = [{'start': 1, 'end': 3, 'text': '繁體 English', 'speaker': 'speaker_1', 'speakers': ['speaker_1']},
+                {'start': 3, 'end': 5, 'text': '交接原文', 'speaker': None, 'speakers': ['speaker_1', 'speaker_2']}]
+    service.update(stored, segments=segments, speakers_done=True)
+    client = TestClient(service.app)
+    path = f'/api/jobs/{stored}/speaker-names'
+    assert client.patch(path, json={'names': {'speaker_1': '  王小明 ', 'speaker_2': 'Alice'}}).status_code == 200
+    assert service.read(stored)['speaker_names'] == {'speaker_1': '王小明', 'speaker_2': 'Alice'}
+    assert client.get(f'/api/jobs/{stored}').json()['speaker_names']['speaker_1'] == '王小明'
+    for kind in ('txt', 'srt'):
+        for timestamps in ('true', 'false'):
+            body = client.get(f'/api/jobs/{stored}/export/{kind}?timestamps={timestamps}').text
+            assert '【王小明】繁體 English' in body
+            assert '王小明／Alice（交接或重疊，請回聽）' in body
+            assert '講者 1' not in body and '講者 2' not in body
+    assert service.read(stored)['segments'] == segments
+    assert service.read(stored)['summary'] == '原本摘要'
+    assert client.patch(path, json={'names': {'speaker_1': ''}}).status_code == 200
+    body = client.get(f'/api/jobs/{stored}/export/txt').text
+    assert '講者 1' in body and 'Alice' in body
+
+
+def test_rename_validation_is_atomic_and_names_are_per_meeting(stored):
+    service.update(stored, segments=[{'start': 1, 'end': 2, 'text': '原文', 'speaker': 'speaker_1'}], speaker_names={'speaker_1': '原姓名'})
+    client = TestClient(service.app)
+    path = f'/api/jobs/{stored}/speaker-names'
+    for names in ({'speaker_9': '不存在'}, {'speaker_1': 'x'*51}, {'speaker_1': 'Alice\n'}, {'speaker_1': 'A\x00B'}):
+        assert client.patch(path, json={'names': names}).status_code == 400
+        assert service.read(stored)['speaker_names'] == {'speaker_1': '原姓名'}
+    other = {**service.read(stored), 'id': 'e'*32, 'speaker_names': {}}
+    service.directory(other['id']).mkdir()
+    service.write(other)
+    assert client.patch(path, json={'names': {'speaker_1': '新姓名'}}).status_code == 200
+    assert service.read(other['id'])['speaker_names'] == {}
+    service.update(stored, status='diarizing')
+    assert client.patch(path, json={'names': {'speaker_1': '不可改'}}).status_code == 409
+
+
+def test_rerun_clears_names_when_new_groups_are_published(stored, monkeypatch):
+    service.update(stored, diarization=True, speaker_names={'speaker_1': '舊姓名'})
+    monkeypatch.setattr(service, 'ensure_normalized', lambda *args: 'audio.wav')
+    monkeypatch.setattr(speakers, 'detect', lambda *args: [{'start': 0, 'end': 4, 'speaker': 'speaker_1'}])
+    service.process(stored, 'speakers')
+    assert service.read(stored)['speaker_names'] == {}

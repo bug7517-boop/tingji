@@ -214,7 +214,8 @@ def process(job_id, action='transcribe'):
                     update(job_id, speaker_turns=turns)
                 if event.is_set():
                     raise InterruptedError()
-                update(job_id, segments=speakers.label_segments(job['segments'], turns), speakers_done=True)
+                update(job_id, segments=speakers.label_segments(job['segments'], turns), speakers_done=True,
+                       speaker_names={})
             except InterruptedError:
                 raise
             except Exception as exc:
@@ -426,6 +427,32 @@ def regenerate_summary(job_id: str):
     return {'ok': True}
 
 
+class SpeakerNames(BaseModel):
+    names: dict[str, str] = Field(max_length=100)
+
+
+@app.patch('/api/jobs/{job_id}/speaker-names')
+def rename_speakers(job_id: str, settings: SpeakerNames):
+    with LOCK:
+        job = read(job_id)
+        if job['status'] in ACTIVE:
+            raise HTTPException(409, '請等待目前處理完成後再修改講者姓名。')
+        known = speakers.speaker_ids(job['segments'])
+        if not set(settings.names).issubset(known):
+            raise HTTPException(400, '包含這份逐字稿不存在的講者。')
+        names = dict(job.get('speaker_names') or {})
+        for speaker, value in settings.names.items():
+            name = value.strip()
+            if len(name) > 50 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+                raise HTTPException(400, '講者姓名最多 50 字，不能包含換行或控制字元。')
+            if name:
+                names[speaker] = name
+            else:
+                names.pop(speaker, None)
+        update(job_id, speaker_names=names)
+    return {'ok': True}
+
+
 class SpeakerSettings(BaseModel):
     count: int = Field(default=0, ge=0, le=20)
 
@@ -541,7 +568,8 @@ def export(job_id: str, kind: str, timestamps: bool = True):
     elif kind in {'txt', 'srt'}:
         if not job['segments']:
             raise HTTPException(409, '目前還沒有可匯出的逐字稿。')
-        body, ext = audio.export_transcript(job['segments'], kind, include_timestamps=timestamps), kind
+        body, ext = audio.export_transcript(job['segments'], kind, include_timestamps=timestamps,
+                                          speaker_names=job.get('speaker_names')), kind
     elif kind == 'json':
         body, ext = json.dumps(public(job), ensure_ascii=False, indent=2), 'json'
     else:

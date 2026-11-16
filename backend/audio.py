@@ -70,10 +70,10 @@ def timecode(seconds, srt=False):
     return f'{hours:02}:{minutes:02}:{sec:02}' + (f',{ms:03}' if srt else '')
 
 
-def export_transcript(segments, kind, include_timestamps=True):
+def export_transcript(segments, kind, include_timestamps=True, speaker_names=None):
     from .speakers import label
     def text(segment):
-        name = label(segment)
+        name = label(segment, speaker_names)
         return (f'【{name}】' if name else '') + segment['text']
     if kind == 'srt':
         return '\n\n'.join(f"{i}\n{timecode(s['start'], True)} --> {timecode(s['end'], True)}\n{text(s)}" for i, s in enumerate(segments, 1)) + '\n'

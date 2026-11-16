@@ -5,7 +5,7 @@ import { api, active, clock, statusText } from './api';
 import './style.css';
 import NoisePreview, { profileName } from './NoisePreview';
 import TranscriptDisplay from './TranscriptDisplay';
-import { SpeakerCount, SpeakerLabel } from './Speakers';
+import { SpeakerCount, SpeakerLabel, SpeakerNames } from './Speakers';
 
 function Sidebar({page, setPage}) {
   return <aside className="sidebar">
@@ -121,10 +121,10 @@ function Results({job, health, onAction, notify, showTimestamps, onTimestampsCha
       <div role="tabpanel" className="result-body">
       {tab==='transcript'?<>
         {job.transcript_done&&job.segments.length?<div className="speaker-tools"><div className="speaker-actions"><SpeakerCount label="補做講者人數" value={speakerCount} onChange={setSpeakerCount} disabled={isActive}/><button className="secondary compact" disabled={isActive||!health?.speakers_ready} onClick={()=>onAction('speakers',{count:speakerCount})}>{job.speakers_done?'重新辨識講者':'辨識講者'}</button></div><p>{job.speakers_done?'講者編號只適用這份錄音；交接或重疊的段落請回聽確認。':'可在保留文字與時間戳的情況下，為這份逐字稿補上講者標籤。'}{!health?.speakers_ready?' 請先執行 setup.cmd 及「下載講者模型.cmd」。':''}</p>{job.speaker_error?<div className="inline-error" role="alert">{job.speaker_error}</div>:null}</div>:null}
-        <div className="transcript-tools"><span>TXT 依此設定匯出；SRT 保留字幕時間</span><TranscriptDisplay showTimestamps={showTimestamps} onChange={onTimestampsChange}/></div>
+        <SpeakerNames key={job.id} job={job} disabled={isActive} onSave={names=>onAction('speaker-names',{names},'PATCH')}/><div className="transcript-tools"><span>TXT 依此設定匯出；SRT 保留字幕時間</span><TranscriptDisplay showTimestamps={showTimestamps} onChange={onTimestampsChange}/></div>
         {job.segments.length?<label className="search"><Search size={17}/><input aria-label="搜尋逐字稿" value={query} placeholder="搜尋逐字稿…" onChange={e=>setQuery(e.target.value)}/><span>{rows.length} 段</span></label>:null}
         {!rows.length?<div className="small-empty">{job.segments.length?'找不到符合的文字。':job.transcript_done?'未偵測到可辨識的語音。':'正在等待辨識結果，完成一段就會保存。'}</div>:<div className="segments">{rows.map((s,i)=><div key={s.start+'-'+i} className={`segment ${current>=s.start&&current<s.end?'playing':''}`}>
-          {showTimestamps?<div className="segment-stamp"><button className="timecode" title="播放此段" onClick={()=>{if(player.current){player.current.currentTime=s.start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}>{clock(s.start)}</button>{s.language ? <span className="language-label">{{zh:"繁體中文",en:"English",mixed:"中英混合",other:"其他"}[s.language]}</span> : null}</div>:null}<div><SpeakerLabel segment={s}/><p>{s.text}</p></div></div>)}</div>}
+          {showTimestamps?<div className="segment-stamp"><button className="timecode" title="播放此段" onClick={()=>{if(player.current){player.current.currentTime=s.start;player.current.play().catch(()=>notify('請使用播放器開始播放。'));}}}>{clock(s.start)}</button>{s.language ? <span className="language-label">{{zh:"繁體中文",en:"English",mixed:"中英混合",other:"其他"}[s.language]}</span> : null}</div>:null}<div><SpeakerLabel segment={s} names={job.speaker_names || {}}/><p>{s.text}</p></div></div>)}</div>}
       </>:<>
         {job.summary_error?<div className="inline-error"><AlertCircle size={17}/><span>{job.summary_error}</span></div>:null}
         {job.summary?<><p className="summary-note">AI 摘要可能有遺漏，請對照時間戳與原始錄音確認。</p><SummaryText text={job.summary}/></>:<div className="small-empty">{job.status==='summarizing'?'正在本機整理摘要，長錄音需要一些時間。':'摘要完成後，會議重點、決議與待辦會顯示在這裡。'}</div>}
@@ -171,7 +171,7 @@ function App() {
     poll();return()=>{live=false;clearTimeout(timer);};
   },[]);
   async function select(id){try{const detail=await api('/jobs/'+id);selectedId.current=id;setJob(detail);setPage('new');}catch(e){notify(e.message);}}
-  async function action(name,payload){try{await api(`/jobs/${job.id}/${name}`,{method:'POST',...(payload?{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{})});setJob(await api('/jobs/'+job.id));}catch(e){notify(e.message);}}
+  async function action(name,payload,method='POST'){try{await api(`/jobs/${job.id}/${name}`,{method,...(payload?{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{})});const detail=await api('/jobs/'+job.id);if(selectedId.current===job.id)setJob(detail);return true;}catch(e){notify(e.message);return false;}}
   async function remove(){try{await api('/jobs/'+deleteTarget.id,{method:'DELETE'});setJobs(items=>items.filter(j=>j.id!==deleteTarget.id));if(selectedId.current===deleteTarget.id){selectedId.current=null;setJob(null);}setDeleteTarget(null);}catch(e){notify(e.message);}}
   return <div className="app-shell"><Sidebar page={page} setPage={setPage}/><main>
     <header className="page-header"><div><h1>{page==='new'?'把會議留下，讓重點清楚。':page==='history'?'每一場討論，都有紀錄。':'安心記錄，專注討論。'}</h1><p>{page==='new'?'將錄音轉成逐字稿、時間戳與會議摘要。':page==='history'?'回到會議現場，找到需要的重點。':'本機處理的使用方式與常見問題。'}</p></div><div className="local-mode"><Laptop size={18}/>本機模式</div></header>

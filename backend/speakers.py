@@ -84,9 +84,14 @@ def label_segments(segments, turns):
     return result
 
 
-def label(segment):
+def speaker_ids(segments):
+    return {value for segment in segments for value in
+            (segment.get('speakers') or ([segment['speaker']] if segment.get('speaker') else []))}
+
+
+def label(segment, names=None):
     ids = segment.get('speakers') or ([segment['speaker']] if segment.get('speaker') else [])
     if not ids:
         return '講者未辨識' if 'speaker' in segment else ''
-    names = '／'.join('講者 ' + value.removeprefix('speaker_') for value in ids)
-    return names + ('（交接或重疊，請回聽）' if len(ids) > 1 else '')
+    display = '／'.join((names or {}).get(value) or '講者 ' + value.removeprefix('speaker_') for value in ids)
+    return display + ('（交接或重疊，請回聽）' if len(ids) > 1 else '')
